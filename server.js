@@ -67,6 +67,38 @@ const MOODS = [
   "maikli at diretso, yung tatama agad"
 ];
 
+// ==============================
+// IMAGES - ROTATION, HINDI RANDOM
+// 75 images sa GitHub: images/panalangin1.jpg etc.
+// Walang gitling sa pangalan - tulad ng ni-rename mo.
+// Rotation base sa linggo: 10 weeks bago umulit, walang doble sa 1 buwan.
+// ==============================
+const IMAGE_SETS = {
+  0: { prefix: 'panalangin', count: 10 },   // Sunday
+  1: { prefix: 'pagod', count: 10 },        // Monday
+  2: { prefix: 'verse', count: 10 },         // Tuesday
+  3: { prefix: 'paalala', count: 13 },       // Wednesday - 10 + 3 bago
+  4: { prefix: 'kwento', count: 10 },        // Thursday
+  5: { prefix: 'pasasalamat', count: 12 },   // Friday - 10 + 2 bago
+  6: { prefix: 'pahinga', count: 10 },       // Saturday
+};
+const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/jonelzky/Pabaon/main/images/';
+
+function getRotationImageForToday() {
+  const now = new Date();
+  const day = now.getDay();
+  const set = IMAGE_SETS[day];
+  // Day of year -> week number -> rotation index
+  const start = new Date(now.getFullYear(), 0, 0);
+  const dayOfYear = Math.floor((now - start) / 86400000);
+  const weekNumber = Math.floor(dayOfYear / 7);
+  const index = (weekNumber % set.count) + 1; // 1..count, walang doble hanggat hindi naikot lahat
+  const fileName = `${set.prefix}${index}.jpg`;
+  const url = GITHUB_RAW_BASE + fileName;
+  console.log('Today image (rotation):', fileName, '| Week:', weekNumber);
+  return { fileName, url };
+}
+
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -136,8 +168,23 @@ async function generatePabaon() {
 
 async function autoPostDaily() {
   const postText = await generatePabaon();
-  await axios.post(`https://graph.facebook.com/v21.0/${PAGE_ID}/feed`, { message: postText, access_token: PAGE_TOKEN });
-  return postText;
+  const { fileName, url } = getRotationImageForToday();
+  try {
+    // Post as photo - Facebook kukuha ng image galing sa GitHub raw URL
+    const res = await axios.post(`https://graph.facebook.com/v21.0/${PAGE_ID}/photos`, {
+      url: url,
+      caption: postText,
+      access_token: PAGE_TOKEN
+    });
+    console.log('Pabaon Posted with photo:', fileName, 'FB id:', res.data.id);
+    return postText + '\n\n[Photo: ' + fileName + ']';
+  } catch (photoErr) {
+    // Fallback: kung ayaw ni FB ng photo, text lang muna para hindi mawala yung post
+    console.log('Photo post failed, fallback to text:', photoErr.response?.data?.error?.message || photoErr.message);
+    await axios.post(`https://graph.facebook.com/v21.0/${PAGE_ID}/feed`, { message: postText, access_token: PAGE_TOKEN });
+    console.log('Pabaon Posted (text fallback):', postText);
+    return postText;
+  }
 }
 
 app.get('/post-now', async (req, res) => {
