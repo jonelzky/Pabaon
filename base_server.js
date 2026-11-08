@@ -367,9 +367,15 @@ app.get('/health', (req, res) => {
 
 app.get('/', (req, res) => { res.send('Pabaon Bot is running...'); });
 
+// IDAGDAG ANG ENDPOINT PARA SA META DATA DELETION
+app.get('/data-deletion', (req, res) => {
+  res.send('Data deletion instructions: To delete your data, please message our page directly.');
+});
+
 scheduleDailyPost();
 app.listen(process.env.PORT || 3000, () => {
   console.log('Pabaon Bot running...');
   console.log('Keys found:', GROQ_KEYS.length);
   console.log('Main model:', MODEL_MAIN, '| Fallback:', MODEL_FALLBACK);
 });
+
