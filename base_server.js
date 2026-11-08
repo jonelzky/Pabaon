@@ -231,26 +231,39 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-app.post('/webhook', async (req, res) => {
+app.post('/webhook', (req, res) => {
   const body = req.body;
   if (body.object === 'page') {
+    // 1. Magpadala MUNA ng 200 OK sa Meta para hindi mag-timeout/re-retry
+    res.status(200).send('EVENT_RECEIVED');
+
+    // 2. I-process sa background ang Groq at Facebook Message
     for (const entry of body.entry) {
       if (entry.messaging) {
         for (const event of entry.messaging) {
           if (event.message && event.message.text && !event.message.is_echo) {
+            const senderId = event.sender.id;
             const userMsg = event.message.text;
             console.log('User:', userMsg);
-            const aiReply = await askGroqReply(userMsg);
-            await sendMessage(event.sender.id, aiReply);
+
+            (async () => {
+              try {
+                const aiReply = await askGroqReply(userMsg);
+                await sendMessage(senderId, aiReply);
+                console.log('Successfully replied to:', senderId);
+              } catch (err) {
+                console.error('Error in sending reply:', err.message);
+              }
+            })();
           }
         }
       }
     }
-    res.status(200).send('EVENT_RECEIVED');
   } else {
     res.sendStatus(404);
   }
 });
+
 
 async function askGroqReply(userMsg) {
   try {
