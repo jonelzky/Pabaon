@@ -171,7 +171,7 @@ def main():
     const reply = await callGroq(["""
     new_reply = """async function askGroqReply(userMsg) {
   try {
-    const liveKnowledge = await getChinhelKnowledge();
+    const liveKnowledge = (await getChinhelKnowledge()).slice(0, 1500);
     let webContext = '';
     if (needsWebSearch(userMsg)) {
       const w = await searchWeb(userMsg);
@@ -196,13 +196,109 @@ def main():
     # 5. Patch generatePabaon: kunin knowledge
     old_gen = "async function generatePabaon() {"
     new_gen = """async function generatePabaon() {
-  const liveKnowledge2 = await getChinhelKnowledge();
+  const liveKnowledge2 = (await getChinhelKnowledge()).slice(0, 1500);
   const knowledgeBlock2 = liveKnowledge2 ? String.fromCharCode(10) + String.fromCharCode(10) + 'Totoong kwento ni Jonel mula sa chinhel_knowledge. Pwede kumuha ng isang maliit na hugot lang pag bagay, huwag ikwento lahat:' + String.fromCharCode(10) + liveKnowledge2 : '';"""
     txt = txt.replace(old_gen, new_gen, 1)
     # Sa system prompt ng generatePabaon, idagdag knowledgeBlock2
     old_gen_sys = "- 1 emoji lang max.`"
     if old_gen_sys in txt:
         txt = txt.replace(old_gen_sys, "- 1 emoji lang max.${knowledgeBlock2}`", 1)
+    # 5a. FIX CHAT - PURE SENDING LANG: sagutin agad si Facebook, saka mag-isip sa background
+    # Dati: hinihintay ni Facebook si Groq (20-30s) bago mag-EVENT_RECEIVED -> timeout -> puro sending lang
+    # Ngayon: EVENT_RECEIVED agad (1s), saka sa background mag-askGroqReply + sendMessage
+    old_webhook_full = """app.post('/webhook', async (req, res) => {
+  const body = req.body;
+  if (body.object === 'page') {
+    for (const entry of body.entry) {
+      if (entry.messaging) {
+        for (const event of entry.messaging) {
+          if (event.message && event.message.text && !event.message.is_echo) {
+            const userMsg = event.message.text;
+            console.log('User:', userMsg);
+            const aiReply = await askGroqReply(userMsg);
+            await sendMessage(event.sender.id, aiReply);
+          }
+        }
+      }
+    }
+    res.status(200).send('EVENT_RECEIVED');
+  } else {
+    res.sendStatus(404);
+  }
+});"""
+    new_webhook_full = """app.post('/webhook', async (req, res) => {
+  const body = req.body;
+  if (body.object === 'page') {
+    res.status(200).send('EVENT_RECEIVED agad'); // Sagot agad kay Facebook, huwag hintayin si Groq
+    // Sa background na mag-isip at mag-reply
+    (async () => {
+      for (const entry of body.entry) {
+        if (entry.messaging) {
+          for (const event of entry.messaging) {
+            if (event.message && event.message.text && !event.message.is_echo) {
+              const userMsg = event.message.text;
+              console.log('User:', userMsg, '| sender:', event.sender.id);
+              try {
+                const aiReply = await askGroqReply(userMsg);
+                console.log('AI reply:', aiReply);
+                await sendMessage(event.sender.id, aiReply);
+                console.log('Sent to:', event.sender.id);
+              } catch (e) { console.log('sendMessage failed:', e.response?.data?.error?.message || e.message); }
+            }
+          }
+        }
+      }
+    })().catch(e => console.log('Webhook background failed:', e.message));
+  } else {
+    res.sendStatus(404);
+  }
+});"""
+    if old_webhook_full in txt:
+        txt = txt.replace(old_webhook_full, new_webhook_full, 1)
+        print("patched webhook to immediate response")
+    else:
+        print("webhook full pattern NOT found")
+    # 5a. FIX CHAT: huwag mag-crash yung webhook pag nag-error yung sendMessage
+    old_webhook = "            const aiReply = await askGroqReply(userMsg);\n            await sendMessage(event.sender.id, aiReply);"
+    new_webhook = "            try { const aiReply = await askGroqReply(userMsg); console.log('AI reply:', aiReply); await sendMessage(event.sender.id, aiReply); } catch (e) { console.log('sendMessage failed:', e.response?.data?.error?.message || e.message); }"
+    if old_webhook in txt:
+        txt = txt.replace(old_webhook, new_webhook, 1)
+        print("patched webhook sendMessage try/catch")
+    else:
+        print("webhook pattern NOT found - check base")
+    # 5b. FIX PUTOL: taasan max_tokens kasi yung gpt-oss nag-reasoning muna, nauubos 350 tokens
+    # Base mo 350 lang, gagawin natin 900 para hindi maputol yung post
+    txt = txt.replace("], 0.95, 350)", "], 0.95, 900)", 1)
+    txt = txt.replace("], 0.7, 250)", "], 0.7, 600)", 1)
+    # 5c. FIX PUTOL: kung naputol pa rin yung post (walang . ? ! sa dulo o may bukas na quote), ayusin bago i-post
+    # Ilalagay natin sa autoPostDaily: kung hindi nagtatapos sa . ? !, tanggalin yung huling putol na sentence
+    old_post = "async function autoPostDaily() {"
+    new_post = """async function cleanPostText(t) {
+  let s = (t || '').trim();
+  // Tanggalin yung bukas na quote na walang sarado
+  const openQuotes = (s.match(/\u201c/g) || []).length - (s.match(/\u201d/g) || []).length;
+  if (openQuotes > 0) s = s.replace(/\u201c[^\u201d]*$/, '').trim();
+  // Kung hindi nagtatapos sa . ? !, putulin sa huling buong sentence
+  if (!/[.!?]$/.test(s)) {
+    const lastEnd = Math.max(s.lastIndexOf('.'), s.lastIndexOf('!'), s.lastIndexOf('?'));
+    if (lastEnd > 30) s = s.slice(0, lastEnd + 1).trim();
+  }
+  // Siguraduhin may tanong at hashtags sa dulo kung nawala dahil sa pagputol
+  if (!s.includes('#Pabaon')) s += ' #Pabaon #DailyNourishment';
+  return s;
+}
+async function autoPostDaily() {"""
+    if old_post in txt and "cleanPostText" not in txt:
+        txt = txt.replace(old_post, new_post, 1)
+        print("added cleanPostText")
+    # Gamitin yung cleanPostText sa autoPostDaily: postText = cleanPostText(await generatePabaon())
+    txt = txt.replace("  const postText = await generatePabaon();", "  const postText = cleanPostText(await generatePabaon());", 1)
+    print("patched autoPostDaily to use cleanPostText")
+    # 5d. FIX CHAT: balutin yung sendMessage para hindi mag-crash yung webhook pag nag-error si FB
+    # At lagyan ng /test-chat para ma-test mo yung chat nang hindi nagme-message sa Page
+    if "/test-chat" not in txt:
+        txt = txt.replace("app.get('/post-now'", "app.get('/test-chat', async (req, res) => { try { const q = req.query.q || 'Hello, kamusta ka?'; const r = await askGroqReply(q); res.json({ ok: true, question: q, reply: r }); } catch (e) { res.status(500).json({ ok: false, error: e.message }); } });\n\napp.get('/post-now'", 1)
+        print("added /test-chat")
     # 6. Guard sa autoPostDaily
     txt = txt.replace("async function autoPostDaily() {\n  const postText", "async function autoPostDaily() {\n  if (!PAGE_ID || !PAGE_TOKEN) { console.log('Auto-post skipped: walang PAGE_ID/PAGE_TOKEN'); return 'skipped'; }\n  const postText", 1)
     # 7. Health + Scheduler start
